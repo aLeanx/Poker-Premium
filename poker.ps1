@@ -3,8 +3,8 @@ param()
 
 # ---------------- One-Time Key / License check ----------------
 $KeysOneTime = @(
-    @{ Hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; Used=$false },
-    @{ Hash="5d41402abc4b2a76b9719d911017c592"; Used=$false },
+    @{ Hash="1"; Used=$false },
+    @{ Hash="2"; Used=$false },
     @{ Hash="7d793037a0760186574b0282f2f435e7"; Used=$false }
 )
 
