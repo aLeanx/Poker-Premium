@@ -38,7 +38,7 @@ function Get-StringSha256 {
 }
 
 # prompt user
-$userKey = Read-SecretKey -Prompt "Enter your Poker key"
+$userKey = Read-SecretKey -Prompt "grr paw"
 if (-not $userKey -or $userKey.Trim().Length -eq 0) {
     Write-Host "No key provided. Exiting." -ForegroundColor Red
     Start-Sleep 1
