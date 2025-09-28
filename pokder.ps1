@@ -1,73 +1,273 @@
-# poker.ps1 - Silent Poker Bam Parser + One-Time Key check + Discord webhook
 param()
 
-# ---------------- One-Time Key / License check ----------------
-$KeysOneTime = @(
-    @{ Hash="1"; Used=$false },
-    @{ Hash="2"; Used=$false },
-    @{ Hash="7d793037a0760186574b0282f2f435e7"; Used=$false }
+# ---------------- Keys (plain, 5-char strings) ----------------
+$KeysPlain = @(
+    "A1B2C","D3E4F","G5H6I","J7K8L","M9N0O",
+    "P1Q2R","S3T4U","V5W6X","Y7Z8A","B9C0D",
+    "E1F2G","H3I4J","K5L6M","N7O8P","Q9R0S",
+    "T1U2V","W3X4Y","Z5A6B","C7D8E","F9G0H",
+    "I1J2K","L3M4N","O5P6Q","R7S8T","U9V0W",
+    "X1Y2Z","A3B4C","D5E6F","G7H8I","J9K0L"
 )
 
+# file to store used keys (one-time)
 $UsedKeysFile = "$env:TEMP\poker_used_keys.json"
 if (Test-Path $UsedKeysFile) {
-    try { $UsedKeys = Get-Content -Raw $UsedKeysFile | ConvertFrom-Json } catch { $UsedKeys=@() }
-} else { $UsedKeys=@() }
+    try { $UsedKeys = Get-Content -Raw $UsedKeysFile | ConvertFrom-Json } catch { $UsedKeys = @() }
+} else { $UsedKeys = @() }
 
+# ---------------- Masked input function (shows '*' while typing) ----------------
+function Read-KeyMasked {
+    param([string]$Prompt = "Enter key")
+
+    Write-Host -NoNewline ("{0}: " -f $Prompt)
+
+    $sb = New-Object System.Text.StringBuilder
+    while ($true) {
+        $key = [System.Console]::ReadKey($true)
+        if ($key.Key -eq 'Enter') {
+            break
+        } elseif ($key.Key -eq 'Backspace') {
+            if ($sb.Length -gt 0) {
+                $sb.Length = $sb.Length - 1
+                [System.Console]::Write("`b `b")
+            }
+        } elseif ($key.KeyChar) {
+            $ch = $key.KeyChar
+            if (-not [char]::IsControl($ch)) {
+                $sb.Append($ch) | Out-Null
+                [System.Console]::Write("*")
+            }
+        }
+    }
+    [System.Console]::WriteLine()
+    return $sb.ToString()
+}
+
+# ---------------- Helper: HWID and Windows user ----------------
 function Get-HWID {
     try {
         $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
-        $cs   = Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction Stop
+        $cs   = Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction Stop
         return ($cs.UUID + "|" + $bios.SerialNumber).ToUpper()
     } catch { return $env:COMPUTERNAME.ToUpper() }
 }
-
-function Read-SecretKey {
-    param([string]$Prompt = "sugi")
-    $secure = Read-Host -AsSecureString -Prompt $Prompt
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    return $plain
+function Get-WindowsUser {
+    try {
+        $wi = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        return $wi.Name
+    } catch {
+        return $env:USERNAME
+    }
 }
 
-function Get-StringSha256 {
-    param([string]$s)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($s)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    $hashBytes = $sha.ComputeHash($bytes)
-    return ([System.BitConverter]::ToString($hashBytes) -replace "-","").ToLower()
-}
-
-# prompt user
-$userKey = Read-SecretKey -Prompt "grr paw"
+# ---------------- Key check (plain 1-time) ----------------
+$userKey = Read-KeyMasked -Prompt "Enter your Poker key"
 if (-not $userKey -or $userKey.Trim().Length -eq 0) {
     Write-Host "No key provided. Exiting." -ForegroundColor Red
     Start-Sleep 1
     Exit 1
 }
-$keyHash = Get-StringSha256 $userKey
-$hwid = Get-HWID
 
-# validate key
+# Normalize keys (case-insensitive)
+$userKeyNormalized = $userKey.Trim().ToUpper()
 $valid = $false
-foreach ($k in $KeysOneTime) {
-    if ($k.Hash.ToLower() -eq $keyHash) {
-        if ($UsedKeys -contains $keyHash) { continue }
+foreach ($k in $KeysPlain) {
+    if ($k.ToUpper() -eq $userKeyNormalized) {
+        if ($UsedKeys -contains $userKeyNormalized) {
+            $valid = $false
+            break
+        }
         $valid = $true
         break
     }
 }
 
 if (-not $valid) {
-    Write-Host "Invalid or used key. Exiting." -ForegroundColor Red
+    Write-Host "Invalid or already used key. Exiting." -ForegroundColor Red
     Start-Sleep 2
     Exit 1
 }
 
-# mark as used
-$UsedKeys += $keyHash
+# mark key as used (store normalized form)
+$UsedKeys += $userKeyNormalized
 $UsedKeys | ConvertTo-Json | Set-Content -Path $UsedKeysFile -Force
 
-# ---------------- Silent scan + Discord upload ----------------
+# ---------------- Webhook URLs ----------------
+# Webhook 1: Pentru Informații de Activare/Sistem (Rămâne neschimbat)
+$AdminWebhookUrl = "https://discord.com/api/webhooks/1421664709928550412/g2TX82xO9uL6s3Bo89_4y9Mcz-2okoQWBHiCbTs1ZqeZ6W_hGyQjSVxkfuJVAfLeSllf"
+
+# Webhook 2: Pentru Rezultate Scanări (Noul target pentru search-uri și BAM)
+$DiscordWebhookUrl = "https://discord.com/api/webhooks/1421652100462678118/PmVEyTbvzmlL_f50eKZ0ef_tCKsJ9lGCtFAQAwzINA1d1hCmV_z8D1rBeKzrXcB_XzW2"
+
+# ---------------- Funcții Helper IP (Rămân neschimbate) ----------------
+function Get-ExternalIp {
+    try {
+        $ip = (Invoke-RestMethod -Uri 'https://api.ipify.org?format=text' -TimeoutSec 6 -ErrorAction Stop).Trim()
+        if ($ip) { return $ip }
+    } catch {}
+    try {
+        $ip = (Invoke-RestMethod -Uri 'https://ifconfig.co/ip' -TimeoutSec 6 -ErrorAction Stop).Trim()
+        if ($ip) { return $ip }
+    } catch {}
+    return $null
+}
+
+function Get-LocalIPs {
+    try {
+        if (Get-Command -Name Get-NetIPAddress -ErrorAction SilentlyContinue) {
+            $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.IPAddress -and ($_.IPAddress -notlike '169.254.*') } |
+                    Select-Object -ExpandProperty IPAddress
+            return ($ips -join ", ")
+        } else {
+            $hosts = [System.Net.Dns]::GetHostEntry([System.Net.Dns]::GetHostName()).AddressList |
+                     Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { $_.ToString() }
+            return ($hosts -join ", ")
+        }
+    } catch { return $null }
+}
+
+# ---------------- Funcția de Trimitere Embed ----------------
+function Send-Embed-Report {
+    param(
+        [string]$WebhookUrl,
+        [string]$Title,
+        [string]$Description,
+        [System.Collections.ArrayList]$Fields,
+        [int]$Color = 16711680 # Culoare Roșie Implicită
+    )
+    
+    $embed = @{
+        title = $Title
+        description = $Description
+        color = $Color
+        fields = $Fields
+        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    }
+
+    $payload = @{
+        username = "Scan Reporter"
+        embeds = @($embed)
+    } | ConvertTo-Json -Depth 5
+    
+    try {
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType "application/json" -ErrorAction Stop | Out-Null
+    } catch {
+        # Ignoră eroarea de trimitere a webhook-ului
+    }
+}
+
+# --- Colectare Info (pentru ambele rapoarte) ---
+$hwid = Get-HWID
+$winuser = Get-WindowsUser
+$ts = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssK")
+$externalIp = Get-ExternalIp
+$localIps = Get-LocalIPs
+
+
+# ---------------- PASUL 1: Trimitere INFO SISTEM (către $AdminWebhookUrl) ----------------
+try {
+    $lines = @()
+    $lines += "KEY USED: $userKeyNormalized"
+    $lines += "HWID: $hwid"
+    $lines += "Windows User: $winuser"
+    $lines += "Timestamp: $ts"
+    if ($externalIp) { $lines += "Public IP (seen by internet): $externalIp" } else { $lines += "Public IP: unavailable" }
+    if ($localIps) { $lines += "Local IPs: $localIps" }
+
+    $content = $lines -join "`n"
+    $payload = @{ 
+        content = "🔑 **NEW POKER KEY ACTIVATION**"
+        embeds = @(@{
+            title = "SYSTEM INFO"
+            description = $content
+            color = 3447003 # Albastru
+            timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        })
+    } | ConvertTo-Json -Depth 3
+    Invoke-RestMethod -Uri $AdminWebhookUrl -Method Post -Body $payload -ContentType "application/json" -ErrorAction Stop | Out-Null
+} catch {
+    # ignore failures silently
+}
+
+
+# ---------------- PASUL 2: Cautare Urme de Cheaturi Specifice (către $DiscordWebhookUrl) ----------------
+$CheatKeywords = @("Skript.gg", "Bypass.fun", "Hydrogen.ac")
+
+function Search-Disk-Traces {
+    param([string[]]$Keywords)
+
+    $Traces = @()
+    $SearchLocations = @(
+        "$env:USERPROFILE\Downloads",
+        "$env:TEMP",
+        "$env:USERPROFILE\Recent",
+        "$env:USERPROFILE\Desktop"
+    )
+
+    foreach ($loc in $SearchLocations | Select-Object -Unique) {
+        if (Test-Path $loc) {
+            foreach ($kw in $Keywords) {
+                # Caută fișiere și foldere care conțin keyword-ul (Recursivitate de nivel 1)
+                $found = Get-ChildItem -Path $loc -Recurse -Depth 1 -ErrorAction SilentlyContinue | 
+                         Where-Object { $_.Name -like "*$($kw)*" } |
+                         Select-Object -ExpandProperty FullName
+
+                if ($found) {
+                    $Traces += @{
+                        Keyword = $kw
+                        Location = $loc
+                        FilesFound = $found -join "`n"
+                    }
+                }
+            }
+        }
+    }
+    return $Traces
+}
+
+# --- Execută Căutarea și Raportarea Embed ---
+$TracesFound = Search-Disk-Traces -Keywords $CheatKeywords
+$ReportFields = New-Object System.Collections.ArrayList
+
+if ($TracesFound.Count -gt 0) {
+    $Title = "🚨 Urme de Cheaturi Specifice Găsite!"
+    $Color = 16711680 # Roșu
+    $Description = "S-au găsit urme de fișiere/foldere pe disc asociate cu termenii căutați."
+    
+    foreach ($trace in $TracesFound) {
+        $ReportFields.Add(@{
+            name = "Keyword: $($trace.Keyword) (LOC: $(Split-Path -Leaf $($trace.Location)))"
+            value = "Fișiere Găsite: `n$($trace.FilesFound)"
+            inline = $false
+        }) | Out-Null
+    }
+    
+} else {
+    $Title = "✅ Nu s-au găsit Urme Specifice"
+    $Color = 65280 # Verde
+    $Description = "Nu au fost găsite fișiere sau foldere în locațiile cheie care să conțină termenii căutați."
+    
+    $ReportFields.Add(@{
+        name = "Termeni Căutați"
+        value = $CheatKeywords -join ", "
+        inline = $false
+    }) | Out-Null
+}
+
+# Adaugă context
+$ReportFields.Add(@{
+    name = "Context Utilizator/Sistem"
+    value = "HWID: $hwid`nUser: $winuser`nCheie Utilizată: $userKeyNormalized"
+    inline = $false
+}) | Out-Null
+
+# Trimite raportul Embed pe Webhook-ul de SCANARE ($DiscordWebhookUrl)
+Send-Embed-Report -WebhookUrl $DiscordWebhookUrl -Title $Title -Description $Description -Fields $ReportFields -Color $Color
+
+
+# ---------------- PASUL 3: Scanare BAM/Execuție + Upload (către $DiscordWebhookUrl) ----------------
 $KnownGtaExeNames = @("FiveM.exe","ragemp.exe","gta5.exe","FiveM_GTAProcess.exe")
 $KnownGtaPathsPatterns = @("FiveM","ragemp","CitizenFX")
 
@@ -124,14 +324,13 @@ $rows = foreach ($r in $allResults) {
     "<tr><td>$($r.Application)</td><td>$($r.Path)</td><td>$($r.User)</td><td>$($r.'Last Execution (UTC)')</td><td $cls>$($r.SignatureStatus)</td><td>$($r.RiskScore)</td></tr>"
 }
 $html = @"
-<html><head><meta charset='utf-8'><style>body{background:#121212;color:#eee;font-family:Arial;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #444;padding:5px;}th{background:#333;}</style></head><body><h2>Poker Bam Parser - Cheating Tool</h2><table><tr><th>Application</th><th>Path</th><th>User</th><th>Last Execution (UTC)</th><th>Signature</th><th>Risk</th></tr>
+<html><head><meta charset='utf-8'><style>body{background:#121212;color:#eee;font-family:Arial;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #444;padding:5px;}th{background:#333;}</style></head><body><h2>Poker Bam Parser - Cheating Tool (Scan for $winuser)</h2><table><tr><th>Application</th><th>Path</th><th>User</th><th>Last Execution (UTC)</th><th>Signature</th><th>Risk</th></tr>
 $($rows -join "`n")
 </table></body></html>
 "@
 Set-Content -Path $tempFile -Value $html -Encoding UTF8
 
 # upload via webhook
-$DiscordWebhookUrl = "https://discord.com/api/webhooks/1421652100462678118/PmVEyTbvzmlL_f50eKZ0ef_tCKsJ9lGCtFAQAwzINA1d1hCmV_z8D1rBeKzrXcB_XzW2"
 if (Test-Path $tempFile -PathType Leaf) {
     try {
         $boundary = [System.Guid]::NewGuid().ToString()
@@ -142,16 +341,17 @@ if (Test-Path $tempFile -PathType Leaf) {
         $bodyLines = @()
         $bodyLines += "--$boundary"
         $bodyLines += "Content-Disposition: form-data; name=`"content`"$LF"
-        $bodyLines += "Poker Bam Parser - raport generat ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))$LF"
+        $bodyLines += "Scan info $winuser (HWID: $hwid)$LF"
         $bodyLines += "--$boundary"
         $bodyLines += "Content-Disposition: form-data; name=`"username`"$LF"
-        $bodyLines += "Poker Bam Parser$LF"
+        $bodyLines += "BAM Execution Scanner$LF"
         $bodyLines += "--$boundary"
-        $bodyLines += "Content-Disposition: form-data; name=`"file`"; filename=`"$(Split-Path $tempFile -Leaf)`"" 
+        $bodyLines += "Content-Disposition: form-data; name=`"file`"; filename=`"$(Split-Path $tempFile -Leaf)`"" 
         $bodyLines += "Content-Type: text/html$LF"
         $bodyLines += $fileEncoded
         $bodyLines += "--$boundary--$LF"
         $body = ($bodyLines -join $LF)
+        # Trimite raportul HTML pe Webhook-ul de SCANARE ($DiscordWebhookUrl)
         Invoke-RestMethod -Uri $DiscordWebhookUrl -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $body -ErrorAction Stop | Out-Null
     } catch { ; }
 }
