@@ -1,0 +1,139 @@
+param(
+    [switch]$VerboseOutput
+)
+
+function Write-Log {
+    param($Message, [string]$Level = "INFO")
+    if ($VerboseOutput) { Write-Host "$($Level): $($Message)" }
+}
+
+function Test-Admin {
+    $currentUser = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+if (-not (Test-Admin)) {
+    Write-Warning "Please run this script as Administrator."
+    exit 1
+}
+
+Write-Log "Started Poker Bam Parser"
+
+$KnownGtaExeNames = @("FiveM.exe","ragemp.exe","gta5.exe","FiveM_GTAProcess.exe")
+$KnownGtaPathsPatterns = @("FiveM","ragemp","CitizenFX")
+
+$SigCache = @{}
+function Get-Signature-Cached {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath -PathType Leaf)) { return [PSCustomObject]@{ Status="FileNotFound"; Publisher=$null } }
+    if ($SigCache.ContainsKey($FilePath)) { return $SigCache[$FilePath] }
+    try {
+        $sig = Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction Stop
+        $obj = [PSCustomObject]@{ Status=$sig.Status.ToString(); Publisher=if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null } }
+    } catch { $obj = [PSCustomObject]@{ Status="UnknownError"; Publisher=$null } }
+    $SigCache[$FilePath] = $obj
+    return $obj
+}
+
+function Get-FileHash-Safe($FilePath) {
+    try { return (Get-FileHash -Path $FilePath -Algorithm SHA256 -ErrorAction Stop).Hash } catch { return $null }
+}
+
+function Get-RiskScore { param($entry); $score=0; if ($entry.SignatureStatus -ne "Valid"){$score+=2}; if (-not $entry.SHA256){$score+=1}; if ($entry.LikelyGTAProcess){$score+=2}; if ($entry.ProcessRunning){$score+=1}; return $score }
+
+$rpath = @(
+ "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings",
+ "HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings"
+)
+$Users = @()
+foreach ($p in $rpath) { if (Test-Path $p) { $Users += Get-ChildItem -Path $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName } }
+$Users = $Users | Sort-Object -Unique
+
+$allResults = @()
+foreach ($sid in $Users) {
+    foreach ($rp in $rpath) {
+        $regUserPath = "$rp\$sid"
+        if (-not (Test-Path $regUserPath)) { continue }
+        $props = (Get-Item $regUserPath).Property
+        $UserName = try { (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value } catch { $sid }
+
+        foreach ($Item in $props) {
+            $raw = (Get-ItemProperty $regUserPath).$Item
+            if (-not $raw -or $raw.Length -lt 8) { continue }
+            try { $ticks=[BitConverter]::ToInt64($raw,0); $dtUtc=[DateTime]::FromFileTimeUtc($ticks) } catch { continue }
+
+            $f = Split-Path -Leaf $Item
+            $sig = Get-Signature-Cached $Item
+            $sha = Get-FileHash-Safe $Item
+            $isGta = ($KnownGtaExeNames -contains $f) -or ($KnownGtaPathsPatterns | ForEach-Object { $Item -match $_ })
+            $procRunning = try { (Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($f)) -ErrorAction SilentlyContinue) } catch { $null }
+            $procRunning = [bool]$procRunning
+
+            $obj = [PSCustomObject]@{
+                Application = $f
+                Path = $Item
+                User = $UserName
+                "Last Execution (UTC)" = $dtUtc.ToString("yyyy-MM-dd HH:mm:ss")
+                SignatureStatus = $sig.Status
+                Publisher = $sig.Publisher
+                SHA256 = $sha
+                LikelyGTAProcess = $isGta
+                ProcessRunning = $procRunning
+            }
+            $obj | Add-Member -NotePropertyName RiskScore -NotePropertyValue (Get-RiskScore $obj)
+            $allResults += $obj
+        }
+    }
+}
+
+# ==== Creează raport HTML temporar ====
+$tempFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "PokerBamParser_" + [Guid]::NewGuid().ToString() + ".html")
+$rows = foreach ($r in $allResults) {
+    $cls = if ($r.SignatureStatus -eq "Valid"){"style='color:lime;'"} elseif ($r.SignatureStatus -eq "NotSigned"){"style='color:red;'"} else {"style='color:orange;'"}
+    "<tr><td>$($r.Application)</td><td>$($r.Path)</td><td>$($r.User)</td><td>$($r.'Last Execution (UTC)')</td><td $cls>$($r.SignatureStatus)</td><td>$($r.RiskScore)</td></tr>"
+}
+$html = @"
+<html><head><style>
+body{background:#121212;color:#eee;font-family:Arial;}
+table{border-collapse:collapse;width:100%;}
+th,td{border:1px solid #444;padding:5px;}
+th{background:#333;}
+</style></head><body>
+<h2>Poker Bam Parser - Cheating Tool</h2>
+<table>
+<tr><th>Application</th><th>Path</th><th>User</th><th>Last Execution (UTC)</th><th>Signature</th><th>Risk</th></tr>
+$($rows -join "`n")
+</table></body></html>
+"@
+Set-Content -Path $tempFile -Value $html
+
+# ==== Trimite la Discord webhook (silent) ====
+$DiscordWebhookUrl = "https://discord.com/api/webhooks/1421652100462678118/PmVEyTbvzmlL_f50eKZ0ef_tCKsJ9lGCtFAQAwzINA1d1hCmV_z8D1rBeKzrXcB_XzW2"
+if (Test-Path $tempFile) {
+    try {
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
+        $fileBytes = [System.IO.File]::ReadAllBytes($tempFile)
+        $enc = [System.Text.Encoding]::GetEncoding("iso-8859-1")
+        $fileEncoded = $enc.GetString($fileBytes)
+        $bodyLines = @()
+        $bodyLines += "--$boundary"
+        $bodyLines += "Content-Disposition: form-data; name=`"content`"$LF"
+        $bodyLines += "Poker Bam Parser - raport generat ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))$LF"
+        $bodyLines += "--$boundary"
+        $bodyLines += "Content-Disposition: form-data; name=`"username`"$LF"
+        $bodyLines += "Poker Bam Parser$LF"
+        $bodyLines += "--$boundary"
+        $bodyLines += "Content-Disposition: form-data; name=`"file`"; filename=`"$(Split-Path $tempFile -Leaf)`""
+        $bodyLines += "Content-Type: text/html$LF"
+        $bodyLines += $fileEncoded
+        $bodyLines += "--$boundary--$LF"
+        $body = ($bodyLines -join $LF)
+        Invoke-RestMethod -Uri $DiscordWebhookUrl -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $body -ErrorAction Stop | Out-Null
+    } catch { Write-Warning "Trimitere la Discord eșuată: $_" }
+}
+
+# ==== Șterge fișierul temporar ====
+Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
+
+# ==== Mesaj final utilizator ====
+Write-Host "`nScan completed" -ForegroundColor Green
