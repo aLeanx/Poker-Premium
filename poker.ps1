@@ -1,4 +1,4 @@
-# poker.ps1 - Silent Poker Bam Parser + simple plain keys (5 chars) masked input + Discord webhooks
+
 param()
 
 # ---------------- Keys (plain, 5-char strings) ----------------
