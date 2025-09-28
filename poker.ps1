@@ -22,7 +22,7 @@ function Get-HWID {
 }
 
 function Read-SecretKey {
-    param([string]$Prompt = "Enter key")
+    param([string]$Prompt = "sugi")
     $secure = Read-Host -AsSecureString -Prompt $Prompt
     $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
